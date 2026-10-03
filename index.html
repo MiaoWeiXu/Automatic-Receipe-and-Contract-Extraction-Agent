@@ -1,0 +1,679 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<!-- 隐私：禁止页面访问任何外部网络，只能读取本机 lib/ 下的文件 -->
+<meta http-equiv="Content-Security-Policy" content="default-src 'self' file: blob: data:; script-src 'self' file: blob: 'unsafe-inline' 'unsafe-eval' 'wasm-unsafe-eval'; worker-src 'self' file: blob:; connect-src 'self' file: blob: data:; img-src 'self' file: blob: data:; style-src 'self' 'unsafe-inline'; font-src 'self' data:">
+<title>单证速录</title>
+<script src="lib/pdf.min.js"></script>
+<script src="lib/pdf.worker.min.js"></script>
+<script src="lib/mammoth.browser.min.js"></script>
+<script src="lib/xlsx.full.min.js"></script>
+<script src="lib/tesseract/tesseract.min.js"></script>
+<style>
+/* Layout: a desk — left rail holds the checklist and intake tray, right side is the ledger of recognised documents split by 合同 / 发票 */
+:root{
+  --bg:#eef1f4; --panel:#ffffff; --sunk:#f5f7f9; --line:#d8dee5; --fg:#1b2430; --muted:#5d6978;
+  --ink:#1f4f9a; --ink-soft:#e3ebf7;
+  --seal:#b3261e; --seal-soft:#fbe9e7;          /* 合同 */
+  --tax:#0f6e63;  --tax-soft:#e0f2ef;           /* 发票 */
+  --warn:#8a5a00; --warn-soft:#fdf1d8;
+  --f-display:"Source Han Serif SC","Noto Serif SC","SimSun","Songti SC",serif;
+  --f-body:"Microsoft YaHei","PingFang SC","Noto Sans SC",system-ui,sans-serif;
+  --f-mono:"Cascadia Mono",Consolas,ui-monospace,monospace;
+}
+@media (prefers-color-scheme: dark){:root:not([data-theme="light"]){
+  --bg:#12161c; --panel:#1a2029; --sunk:#151a21; --line:#2c3541; --fg:#e4e9ef; --muted:#9aa6b4;
+  --ink:#8db4f0; --ink-soft:#1f2c42; --seal:#f0907f; --seal-soft:#3a2020; --tax:#6fd0c1; --tax-soft:#143430;
+  --warn:#f0c46a; --warn-soft:#3a2e12; color-scheme:dark}}
+:root[data-theme="dark"]{
+  --bg:#12161c; --panel:#1a2029; --sunk:#151a21; --line:#2c3541; --fg:#e4e9ef; --muted:#9aa6b4;
+  --ink:#8db4f0; --ink-soft:#1f2c42; --seal:#f0907f; --seal-soft:#3a2020; --tax:#6fd0c1; --tax-soft:#143430;
+  --warn:#f0c46a; --warn-soft:#3a2e12; color-scheme:dark}
+*{box-sizing:border-box}
+[hidden]{display:none!important}
+html{color-scheme:light}
+body{margin:0;background:var(--bg);color:var(--fg);font-family:var(--f-body);font-size:14px;line-height:1.55;padding-inline:16px;padding-block:20px 48px}
+.wrap{max-width:1240px;margin:0 auto;display:grid;gap:20px}
+header{display:flex;flex-wrap:wrap;align-items:flex-end;justify-content:space-between;gap:12px}
+h1{font-family:var(--f-display);font-size:28px;margin:0;letter-spacing:.04em;text-wrap:balance}
+header p{margin:2px 0 0;color:var(--muted)}
+.grid{display:grid;grid-template-columns:340px minmax(0,1fr);gap:20px;align-items:start}
+@media (max-width:900px){.grid{grid-template-columns:minmax(0,1fr)}}
+.panel{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:16px;display:grid;gap:12px;min-width:0}
+.step{display:flex;align-items:baseline;gap:8px;margin:0;font-size:15px;font-weight:700}
+.step b{font-family:var(--f-mono);font-size:12px;color:var(--ink);border:1px solid var(--ink);border-radius:4px;padding:0 5px;font-weight:500}
+.side{display:grid;gap:20px}
+.need{display:grid;gap:10px}
+.need-group{border:1px solid var(--line);border-radius:8px;padding:10px 12px;display:grid;gap:4px}
+.need-group h3{margin:0;font-size:13px;display:flex;justify-content:space-between;align-items:center;gap:8px}
+.need-group ul{margin:0;padding-left:18px;color:var(--muted);font-size:13px}
+.tag{display:inline-block;font-size:12px;font-weight:500;border-radius:4px;padding:1px 7px;white-space:nowrap}
+.tag.contract{background:var(--seal-soft);color:var(--seal)}
+.tag.invoice{background:var(--tax-soft);color:var(--tax)}
+.tag.other{background:var(--warn-soft);color:var(--warn)}
+.tag.offline{background:var(--tax-soft);color:var(--tax);font-size:13px;padding:3px 10px}
+.tag.example{background:var(--sunk);color:var(--muted);border:1px dashed var(--line)}
+.count{font-family:var(--f-mono);font-size:12px;color:var(--muted)}
+.fmt{font-size:12px;color:var(--muted)}
+.drop{border:1.5px dashed var(--ink);border-radius:10px;background:var(--ink-soft);padding:20px 14px;text-align:center;display:grid;gap:6px;cursor:pointer;transition:background .15s}
+.drop:hover,.drop.over{background:color-mix(in srgb,var(--ink-soft) 60%,var(--ink) 12%)}
+.drop:focus-visible{outline:2px solid var(--ink);outline-offset:2px}
+.drop strong{color:var(--ink);font-size:15px}
+.drop span{color:var(--muted);font-size:12px}
+textarea,input,select{font:inherit;color:var(--fg);background:var(--sunk);border:1px solid var(--line);border-radius:6px;padding:6px 8px;width:100%;min-width:0}
+textarea{min-height:84px;resize:vertical}
+input:focus,textarea:focus,select:focus{outline:2px solid var(--ink);outline-offset:-1px;background:var(--panel)}
+.row{display:flex;gap:8px;flex-wrap:wrap;align-items:center}
+button{font:inherit;font-size:13px;border-radius:6px;border:1px solid var(--line);background:var(--panel);color:var(--fg);padding:6px 11px;cursor:pointer;white-space:nowrap}
+button:hover{border-color:var(--ink);color:var(--ink)}
+button:focus-visible{outline:2px solid var(--ink);outline-offset:1px}
+button.primary{background:var(--ink);border-color:var(--ink);color:var(--panel)}
+button.primary:hover{color:var(--panel);filter:brightness(1.08)}
+button.ghost{border-color:transparent;background:transparent;color:var(--muted)}
+button:disabled{opacity:.5;cursor:default}
+label.chk{display:flex;gap:6px;align-items:center;font-size:13px;color:var(--muted)}
+label.chk input{width:auto}
+.ai-note{font-size:12px;color:var(--muted)}
+.tabs{display:flex;gap:4px;flex-wrap:wrap;border-bottom:1px solid var(--line)}
+.tabs button{border:none;border-bottom:2px solid transparent;border-radius:0;background:none;padding:8px 12px;color:var(--muted);font-size:14px}
+.tabs button[aria-selected="true"]{color:var(--fg);border-bottom-color:var(--ink);font-weight:700}
+.tabs button .count{margin-left:4px}
+.toolbar{display:flex;justify-content:space-between;gap:8px;flex-wrap:wrap;align-items:center}
+.toolbar .hint{color:var(--muted);font-size:12px}
+.list{display:grid;gap:14px}
+.card{border:1px solid var(--line);border-radius:10px;overflow:hidden;background:var(--panel)}
+.card-head{display:flex;flex-wrap:wrap;gap:8px;align-items:center;justify-content:space-between;padding:10px 12px;background:var(--sunk);border-bottom:1px solid var(--line)}
+.card-head .name{font-weight:700;overflow-wrap:anywhere;min-width:0}
+.card-head .meta{display:flex;gap:6px;align-items:center;flex-wrap:wrap}
+.card-head select{width:auto;padding:3px 6px;font-size:13px}
+.status{font-size:12px;color:var(--muted)}
+.status.err{color:var(--seal)}
+.status.run{color:var(--ink)}
+.fields{display:grid;grid-template-columns:repeat(auto-fill,minmax(250px,1fr));gap:1px;background:var(--line)}
+.f{background:var(--panel);padding:8px 12px;display:grid;gap:3px;min-width:0}
+.f label{font-size:12px;color:var(--muted);display:flex;justify-content:space-between;align-items:center;gap:6px}
+.f.key label{color:var(--fg);font-weight:500}
+.f .val{display:flex;gap:6px;align-items:center}
+.f input{background:transparent;border-color:transparent;padding:4px 6px;margin-left:-6px}
+.f input:hover{border-color:var(--line)}
+.f input.num{font-family:var(--f-mono);font-variant-numeric:tabular-nums}
+.f input.empty{color:var(--muted)}
+.cp{padding:2px 7px;font-size:12px;border-color:transparent;color:var(--muted);background:transparent}
+.card-foot{display:flex;flex-wrap:wrap;gap:8px;justify-content:space-between;align-items:center;padding:10px 12px;border-top:1px solid var(--line)}
+.items{padding:12px;border-top:1px solid var(--line);display:grid;gap:8px}
+.items-head{display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap}
+.items-scroll{overflow-x:auto}
+.items table{border-collapse:collapse;width:100%;font-size:13px}
+.items th,.items td{text-align:left;padding:5px 8px;border-bottom:1px solid var(--line);white-space:nowrap}
+.items th{color:var(--muted);font-weight:500;background:var(--sunk)}
+.items td.num,.items td:first-child{font-family:var(--f-mono);font-variant-numeric:tabular-nums}
+.items td.num{text-align:right}
+details.raw{padding:0 12px 10px}
+details.raw summary{cursor:pointer;color:var(--muted);font-size:12px;padding-top:8px}
+details.raw pre{white-space:pre-wrap;overflow-wrap:anywhere;max-height:220px;overflow:auto;background:var(--sunk);border-radius:6px;padding:8px;font-size:12px;font-family:var(--f-mono);margin:6px 0 0}
+.empty-state{border:1px dashed var(--line);border-radius:10px;padding:28px 16px;text-align:center;color:var(--muted)}
+.toast{position:fixed;left:50%;bottom:calc(20px + env(safe-area-inset-bottom,0px));transform:translateX(-50%);background:var(--fg);color:var(--bg);padding:8px 16px;border-radius:8px;font-size:13px;z-index:9;pointer-events:none}
+#copyFallback{position:fixed;inset:auto 16px calc(16px + env(safe-area-inset-bottom,0px)) 16px;z-index:10;background:var(--panel);border:1px solid var(--ink);border-radius:10px;padding:12px;display:grid;gap:8px;box-shadow:0 8px 30px rgba(0,0,0,.2)}
+#copyFallback textarea{min-height:120px;font-family:var(--f-mono);font-size:12px}
+@media (prefers-reduced-motion:reduce){*{transition:none!important}}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <div>
+      <h1>单证速录</h1>
+      <p>上传合同与发票，自动分类并抓取公司、产品、金额、港口与日期，核对后一键复制。</p>
+    </div>
+    <span class="tag offline">本机处理 · 不联网 · 不上传</span>
+  </header>
+
+  <div class="grid">
+    <aside class="side">
+      <section class="panel" aria-labelledby="s1">
+        <h2 class="step" id="s1"><b>1</b>需要准备的文件</h2>
+        <div class="need">
+          <div class="need-group">
+            <h3><span class="tag contract">合同类</span><span class="count" id="needContract">已录入 0 份</span></h3>
+            <ul>
+              <li>销售合同 / 采购合同 (Sales / Purchase Contract)</li>
+              <li>框架协议、补充协议</li>
+              <li>抓取：合同编号、买卖双方、产品、数量、单价、总金额、装运港 / 目的港、装运与到港日期、付款方式</li>
+            </ul>
+          </div>
+          <div class="need-group">
+            <h3><span class="tag invoice">发票类</span><span class="count" id="needInvoice">已录入 0 份</span></h3>
+            <ul>
+              <li>商业发票 Commercial Invoice</li>
+              <li>形式发票 Proforma Invoice (PI)</li>
+              <li>增值税专用 / 普通发票</li>
+              <li>抓取：发票号码、开票日期、销售方 / 购买方、产品、金额、税额、到港日期</li>
+            </ul>
+          </div>
+          <p class="fmt">支持 PDF、Word (.docx)、Excel (.xlsx/.csv)、TXT，以及扫描件 / 照片 (JPG、PNG)。扫描件和照片用本机文字识别 (OCR)，速度较慢，结果请重点核对。</p>
+        </div>
+      </section>
+
+      <section class="panel" aria-labelledby="s2">
+        <h2 class="step" id="s2"><b>2</b>系统录入</h2>
+        <div class="drop" id="drop" tabindex="0" role="button" aria-label="选择或拖入文件">
+          <strong>拖入文件，或点击选择</strong>
+          <span>可一次多选，系统自动判断是合同还是发票</span>
+        </div>
+        <input type="file" id="file" multiple hidden accept=".pdf,.docx,.xlsx,.xls,.csv,.txt,.jpg,.jpeg,.png,.webp">
+        <label for="paste" class="fmt">或者直接粘贴文字内容：</label>
+        <textarea id="paste" placeholder="把合同或发票的文字粘贴到这里…"></textarea>
+        <div class="row"><button id="pasteBtn" class="primary">录入粘贴内容</button></div>
+        <p class="ai-note" id="aiNote"></p>
+      </section>
+    </aside>
+
+    <main class="panel" aria-labelledby="s3">
+      <h2 class="step" id="s3"><b>3</b>识别结果 <span class="fmt" style="font-weight:400">· 可直接修改，<b style="border:none;padding:0;color:var(--muted);font-family:var(--f-body)">4</b> 复制粘贴</span></h2>
+      <div class="tabs" role="tablist">
+        <button role="tab" data-tab="contract" aria-selected="true">合同<span class="count" id="cContract">0</span></button>
+        <button role="tab" data-tab="invoice" aria-selected="false">发票<span class="count" id="cInvoice">0</span></button>
+        <button role="tab" data-tab="other" aria-selected="false">待分类<span class="count" id="cOther">0</span></button>
+      </div>
+      <div class="toolbar">
+        <span class="hint" id="tabHint"></span>
+        <div class="row">
+          <button id="copyTable">复制为表格（粘贴到 Excel）</button>
+          <button id="copyAllText">复制为文字</button>
+          <button id="clearTab" class="ghost">清空本类</button>
+        </div>
+      </div>
+      <div class="list" id="list"></div>
+    </main>
+  </div>
+</div>
+<div class="toast" id="toast" hidden></div>
+<div id="copyFallback" hidden>
+  <div class="row" style="justify-content:space-between"><strong>浏览器不允许自动复制，请按 Ctrl+C（手机长按）复制下面内容</strong><button id="fbClose">关闭</button></div>
+  <textarea id="fbText" readonly></textarea>
+</div>
+
+<script>
+/* ---------- 字段定义 ---------- */
+const FIELDS = {
+  contract: [
+    ["docNo","合同编号"],["date","签订日期"],["signPlace","签署地点"],["seller","卖方 / 供货方 (乙方)"],["buyer","买方 / 采购方 (甲方)"],["endUser","最终用户"],
+    ["product","产品名称"],["quantity","数量"],["unitPrice","单价"],["amount","合同总金额",1],["currency","币种"],
+    ["loadPort","装运港"],["destPort","目的港 / 交货地点"],["shipDate","装运日期 (ETD)"],["arrivalDate","到港 / 入港 / 交货日期",1],["payment","付款方式"]
+  ],
+  invoice: [
+    ["docNo","发票号码"],["date","开票 / 通知日期"],["seller","销售方 / 开票方"],["buyer","购买方 (发票抬头)"],
+    ["buyerTaxId","购买方税号"],["buyerAddr","购买方地址电话"],["buyerBank","购买方开户行及账号"],["contractNo","对应合同号"],
+    ["product","产品名称"],["quantity","数量合计"],["unitPrice","单价"],["amount","发票总金额 (价税合计)",1],["currency","币种"],["taxAmount","税额"],
+    ["loadPort","装运港"],["destPort","目的港"],["arrivalDate","到港 / 入港日期 (ETA)",1]
+  ]
+};
+FIELDS.other = FIELDS.contract;
+const KEY_FIELDS = new Set(["seller","buyer","product","amount","arrivalDate"]);
+const NUM_FIELDS = new Set(["amount","unitPrice","taxAmount","buyerTaxId","buyerBank"]);
+const TYPE_NAME = {contract:"合同",invoice:"发票",other:"待分类"};
+
+/* ---------- 状态 ---------- */
+const LS = "danzheng.records.v1";
+let records = [];
+let tab = "contract";
+
+function load(){
+  try{ const r = JSON.parse(localStorage.getItem(LS)||"null"); if(Array.isArray(r)) return r; }catch(e){}
+  return null;
+}
+let saveT;
+function save(){ clearTimeout(saveT); saveT = setTimeout(()=>{ try{ localStorage.setItem(LS, JSON.stringify(records)); }catch(e){} },250); }
+
+const EXAMPLES = [
+  {id:"ex1",example:true,fileName:"示例-销售合同-SC20260915.pdf",type:"contract",status:"示例数据，可删除",
+   fields:{docNo:"SC-20260915-018",date:"2026-09-15",seller:"宁波海曙恒达进出口有限公司",buyer:"Pacific Harbor Trading Pty Ltd",product:"不锈钢保温杯 500ml",quantity:"12,000 PCS",unitPrice:"3.85",amount:"46,200.00",currency:"USD",loadPort:"宁波 Ningbo",destPort:"Sydney, Australia",shipDate:"2026-10-20",arrivalDate:"2026-11-08",payment:"30% T/T 预付，70% 见提单副本付清"},text:""},
+  {id:"ex2",example:true,fileName:"示例-Commercial Invoice-INV2610.pdf",type:"invoice",status:"示例数据，可删除",
+   fields:{docNo:"INV-2610-0042",date:"2026-10-18",seller:"宁波海曙恒达进出口有限公司",buyer:"Pacific Harbor Trading Pty Ltd",product:"不锈钢保温杯 500ml",quantity:"12,000 PCS",unitPrice:"3.85",amount:"46,200.00",currency:"USD",taxAmount:"",contractNo:"SC-20260915-018",loadPort:"宁波 Ningbo",destPort:"Sydney, Australia",arrivalDate:"2026-11-08"},text:""}
+];
+records = load() ?? EXAMPLES.map(r=>({...r,fields:{...r.fields}}));
+
+/* ---------- 文字提取 ---------- */
+if (window.pdfjsLib) pdfjsLib.GlobalWorkerOptions.workerSrc = "lib/pdf.worker.min.js";
+
+/* 本机 OCR（Tesseract，中文简体 + 英文），模型文件都在 lib/tesseract 下 */
+const OCR_OK = location.protocol.startsWith("http") && !!window.Tesseract;
+let ocrWorker = null;
+function ocrReady(onProgress){
+  if (!ocrWorker){
+    const abs = p=>new URL(p, location.href).href;
+    ocrWorker = Tesseract.createWorker(["chi_sim","eng"], 1, {
+      workerPath: abs("lib/tesseract/worker.min.js"),
+      corePath: abs("lib/tesseract/core"),
+      langPath: abs("lib/tesseract/lang"),
+      workerBlobURL: false, gzip: true,
+      logger: m=>ocrReady.onProgress?.(m)
+    }).catch(e=>{ ocrWorker=null; throw e; });
+  }
+  ocrReady.onProgress = onProgress;
+  return ocrWorker;
+}
+async function ocr(image, onProgress){
+  if (!OCR_OK) throw new Error(location.protocol==="file:"
+    ? "扫描件 / 照片需要通过「启动.bat」打开本工具才能识别"
+    : "文字识别组件没有加载成功");
+  const w = await ocrReady(onProgress);
+  const {data} = await w.recognize(image);
+  return data.text.replace(/([一-龥，。：；（）、])[ \t]+(?=[一-龥，。：；（）、\d])/g,"$1")
+                  .replace(/(\d)[ \t]+(?=[一-龥])/g,"$1");
+}
+async function pdfPageImage(pdf, n){
+  const pg = await pdf.getPage(n), vp = pg.getViewport({scale:2.2});
+  const cv = document.createElement("canvas"); cv.width=vp.width; cv.height=vp.height;
+  await pg.render({canvasContext:cv.getContext("2d"),viewport:vp}).promise;
+  return cv;
+}
+
+async function readFile(file, onProgress){
+  const name = file.name.toLowerCase(), ext = name.split(".").pop();
+  if (["jpg","jpeg","png","webp","gif","bmp"].includes(ext)) return {text: await ocr(file, onProgress), ocr:true};
+  if (ext==="pdf"){
+    if(!window.pdfjsLib) throw new Error("PDF 组件没有加载成功，请刷新页面");
+    const pdf = await pdfjsLib.getDocument({data:new Uint8Array(await file.arrayBuffer())}).promise;
+    let text = "";
+    for (let p=1;p<=Math.min(pdf.numPages,15);p++){
+      const pg = await pdf.getPage(p), c = await pg.getTextContent();
+      let lastY=null, line="";
+      for (const it of c.items){
+        const y = it.transform?.[5];
+        if (lastY!==null && Math.abs(y-lastY)>3){ text += line.trim()+"\n"; line=""; }
+        line += it.str + (it.hasEOL?"\n":" "); lastY=y;
+      }
+      text += line.trim()+"\n\n";
+    }
+    if (text.replace(/\s/g,"").length >= 40) return {text};
+    // 扫描件 PDF：逐页渲染成图片后在本机 OCR（最多前 3 页）
+    let out = "";
+    for (let p=1;p<=Math.min(pdf.numPages,3);p++){
+      out += await ocr(await pdfPageImage(pdf,p), m=>onProgress?.(m,p)) + "\n\n";
+    }
+    return {text:out, ocr:true};
+  }
+  if (ext==="docx"){
+    if(!window.mammoth) throw new Error("Word 组件没有加载成功，请刷新页面");
+    const r = await mammoth.extractRawText({arrayBuffer: await file.arrayBuffer()});
+    return {text:r.value};
+  }
+  if (["xlsx","xls","csv"].includes(ext) && window.XLSX){
+    const wb = XLSX.read(await file.arrayBuffer());
+    return {text: wb.SheetNames.map(n=>XLSX.utils.sheet_to_csv(wb.Sheets[n],{FS:"  "})).join("\n\n")};
+  }
+  return {text: await file.text()};
+}
+
+/* ---------- 分类 ---------- */
+function classify(text, fileName){
+  const t = (fileName+" ")+text.slice(0,6000);
+  const score = (res)=>res.reduce((s,[re,w])=>s+((t.match(re)||[]).length? w*Math.min((t.match(re)||[]).length,3):0),0);
+  const c = score([[/合同|契约|协议书?|contract|agreement/gi,3],[/甲方|乙方|签订|违约|条款|terms and conditions/gi,1]]);
+  const i = score([[/发票|invoice/gi,3],[/税额|价税合计|开票|购买方|销售方|发票代码|发票号码|invoice\s*no/gi,1]]);
+  if (/发票|invoice|^inv/i.test(fileName) && !/合同|contract/i.test(fileName)) return "invoice";
+  if (/合同|contract|协议/i.test(fileName) && !/发票|invoice/i.test(fileName)) return "contract";
+  if (!c && !i) return "other";
+  return i > c ? "invoice" : "contract";
+}
+
+/* ---------- 本地规则抓取 ---------- */
+const MON = "Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Sept|Oct|Nov|Dec";
+const DATE_RE = new RegExp(`(\\d{4})\\s*[-/.年]\\s*(\\d{1,2})\\s*[-/.月]\\s*(\\d{1,2})\\s*日?|(\\d{1,2})(?:st|nd|rd|th)?[\\s\\-/.]*(${MON})[a-z]*\\.?[\\s\\-/.,]*(\\d{4})|(${MON})[a-z]*\\.?\\s*(\\d{1,2})(?:st|nd|rd|th)?,?\\s*(\\d{4})`,"i");
+const DATE_RE_G = new RegExp(DATE_RE.source,"gi");
+const MI = m=>("janfebmaraprmayjunjulaugsepoctnovdec".indexOf(m.slice(0,3).toLowerCase())/3)+1;
+const pad = n=>String(n).padStart(2,"0");
+function toDate(m){
+  if(!m) return "";
+  if(m[1]) return `${m[1]}-${pad(m[2])}-${pad(m[3])}`;
+  if(m[4]) return `${m[6]}-${pad(MI(m[5]))}-${pad(m[4])}`;
+  if(m[7]) return `${m[9]}-${pad(MI(m[7]))}-${pad(m[8])}`;
+  return "";
+}
+const toNum = s=>parseFloat(String(s).replace(/[^\d.]/g,""));
+const fmtMoney = n=>n.toLocaleString("en-US",{minimumFractionDigits:2,maximumFractionDigits:2});
+// 金额：带千分位 / 带小数 / 3 位以上整数；排除百分比和年份
+const NUM_RE = /(\d{1,3}(?:,\d{3})+(?:\.\d+)?|\d+\.\d{1,2}|\d{3,})(?![\d.,]*\s*[%％])/g;
+const numIn = s=>([...String(s).matchAll(NUM_RE)].map(x=>x[1]).find(n=>!/^(19|20)\d{2}$/.test(n))||"");
+
+// 合同模板里的【 】、下划线占位视为空
+function unbox(v){
+  if (/【[\s\/／]*】/.test(v)) return "";                 // 含未填写的空位，整项视为未填
+  v = v.replace(/【\s*([^】]*?)\s*】/g,"$1").replace(/_{2,}/g,"").split(/[。；;]/)[0].trim();
+  return /^[\s\/／、,，.。:：港元%]*$/.test(v) ? "" : v;
+}
+function clean(v){
+  v = v.split(/\s{3,}|\t|(?=(?:电话|地址|税号|开户行|账号|纳税人识别号|统一社会信用代码|Tel|Fax|Add(?:ress)?|E-?mail)\s*[:：])/i)[0];
+  return unbox(v.replace(/^[\s:：.\-]+|[\s,，;；。]+$/g,"")).trim();
+}
+const LABEL_LINE = /^[一-龥A-Za-z /（）()]{1,16}[:：]/;   // 形如「标签：」的行
+function byLabel(text, labels, maxLen=80){
+  const lines = text.split("\n");
+  for (const lab of labels){
+    // 标签前不能紧贴汉字/字母（避免「卖方应…」这类条款正文）；标签后可带（说明）；必须跟冒号，或表格式的多个空格
+    const re = new RegExp(`(?:^|[^\\u4e00-\\u9fa5A-Za-z])(?:${lab})\\s*(?:[（(][^）)\\n]{0,12}[）)])?[）)]?\\s*(?:[:：]|\\s{2,}|\\t|(?<=No\\.?)\\s+)\\s*(.*)`,"i");
+    for (let i=0;i<lines.length;i++){
+      const m = lines[i].match(re);
+      if(!m) continue;
+      let v = clean(m[1]);
+      const blankSlot = /【/.test(m[1]) || m[1].trim().length > 0;
+      if (!v && !blankSlot && lines[i+1] && !LABEL_LINE.test(lines[i+1].trim())) v = clean(lines[i+1]);
+      if (v && v.length<=maxLen) return v;
+    }
+  }
+  return "";
+}
+function dateNear(text, labels){
+  for (const lab of labels){
+    const re = new RegExp(`(?:${lab})[^\\n]{0,40}`,"ig"); let m;
+    while((m = re.exec(text))){
+      const d = text.slice(m.index, m.index+m[0].length+40).match(DATE_RE);
+      if (d) return toDate(d);
+    }
+  }
+  return "";
+}
+const lastDate = text=>{ const all=[...text.matchAll(DATE_RE_G)]; return all.length ? toDate(all[all.length-1]) : ""; };
+function amountNear(text, labels){
+  for (const lab of labels){
+    const re = new RegExp(`(?:${lab})`,"ig"); let m;
+    while((m = re.exec(text))){
+      // 只看标签所在行；该行没有数字时再看下一行（表格型单据金额常在下一行）
+      const rest = text.slice(m.index+m[0].length).split("\n");
+      const win = /\d/.test(rest[0]) ? rest[0] : (rest[1]||"");
+      const nums = [...win.slice(0,120).matchAll(NUM_RE)].map(x=>x[1]).filter(n=>!/^(19|20)\d{2}$/.test(n));
+      if (nums.length) return nums.sort((a,b)=>toNum(b)-toNum(a))[0];
+    }
+  }
+  return "";
+}
+function companyAfter(text, anchor){
+  const m = text.match(anchor); if(!m) return "";
+  const win = text.slice(m.index, m.index+260);
+  const n = win.match(/(?<![品产商货目])名\s*称\s*[:：]\s*([^\n]+)/);
+  if (n) return clean(n[1]);
+  const c = win.match(/([一-龥（）()A-Za-z]{2,40}(?:有限责任公司|股份有限公司|有限公司|公司|集团|厂))|([A-Z][A-Za-z0-9&.,'\- ]{2,60}?(?:Co\.?,?\s*Ltd\.?|Limited|LIMITED|Inc\.?|LLC|GmbH|Corp\.?|Pty\.?\s*Ltd\.?))/);
+  return c ? clean(c[0]) : "";
+}
+function currencyOf(text){
+  const tally = {USD:/USD|US\$|美元|美金/g,CNY:/RMB|CNY|人民币|¥|￥|(?<![美欧港日澳英])元/g,EUR:/EUR|€|欧元/g,AUD:/AUD|A\$|澳元/g,JPY:/JPY|日元/g,GBP:/GBP|£|英镑/g,HKD:/HKD|港币|港元/g};
+  let best="",n=0;
+  for (const [k,re] of Object.entries(tally)){ const c=(text.match(re)||[]).length; if(c>n){n=c;best=k;} }
+  return best;
+}
+function docKind(text, type){
+  if (/开票通知/.test(text)) return "开票通知";
+  if (type!=="invoice") return /采购合同/.test(text) ? "采购合同" : /销售合同|sales\s*contract/i.test(text) ? "销售合同" : "";
+  if (/增值税/.test(text)) return "增值税发票";
+  if (/proforma|形式发票/i.test(text)) return "形式发票";
+  if (/commercial\s*invoice|商业发票/i.test(text)) return "商业发票";
+  return "";
+}
+
+/* ---------- 产品明细 ---------- */
+// 写法一：逐行「品名：/数量：/单价：/金额：」重复出现（开票通知、装箱明细常见）
+const ITEM_NAME  = /^(?:品\s*名|产品名称|货物名称|商品名称|项目名称|Description(?:\s*of\s*Goods)?|Commodity)\s*[:：]\s*(.+)$/i;
+const ITEM_QTY   = /^(?:数\s*量|Quantity|Qty\.?)\s*[:：]\s*(.+)$/i;
+const ITEM_PRICE = /^(?:单\s*价|Unit\s*Price)\s*[:：]\s*(.+)$/i;
+const ITEM_AMT   = /^(?:开票金额|金\s*额|小\s*计|总\s*价|Amount)\s*[:：]\s*(.+)$/i;
+function labeledItems(text){
+  const items=[]; let cur=null;
+  for (const raw of text.split("\n")){
+    const line = raw.trim(); let m;
+    if ((m=line.match(ITEM_NAME))){ cur={name:clean(m[1]),qty:"",price:"",amount:"",tax:""}; items.push(cur); continue; }
+    if (!cur) continue;
+    if ((m=line.match(ITEM_QTY))) cur.qty = clean(m[1]);
+    else if ((m=line.match(ITEM_PRICE))) cur.price = numIn(m[1]);
+    else if ((m=line.match(ITEM_AMT))) cur.amount = numIn(m[1]);
+  }
+  return items.filter(i=>i.name);
+}
+// 写法二：增值税发票明细行「*类别*名称 [规格] 单位 数量 单价 金额 税率 税额」
+function vatRows(text){
+  const out = [];
+  for (const line of text.split("\n")){
+    if (!/^\s*\*[^*\n]+\*/.test(line)) continue;
+    const t = line.trim().split(/\s+/), n = t.length;
+    if (n < 7 || !/%$|免税|不征税/.test(t[n-2])) continue;
+    out.push({name:t.slice(0,n-6).join(" ").replace(/^\*[^*]+\*/,""), qty:t[n-5]+" "+t[n-6], price:t[n-4], amount:t[n-3], tax:t[n-1]});
+  }
+  return out;
+}
+// 数量合计：同一单位相加（1台 + 4台 → 5台），单位不一致时分别列出
+function sumQty(items){
+  const by = new Map();
+  for (const it of items){
+    const m = it.qty.replace(/,/g,"").match(/^([\d.]+)\s*(.*)$/);
+    if (!m) return items.map(i=>i.qty).filter(Boolean).join("；");
+    by.set(m[2], (by.get(m[2])||0) + parseFloat(m[1]));
+  }
+  return [...by].map(([u,n])=>`${+n.toFixed(4)} ${u}`.trim()).join(" + ");
+}
+
+function localExtract(text, type){
+  const f = {}, inv = type==="invoice";
+  const notice = /开票通知|开票资料|开票明细/.test(text);
+  const contractRef = (text.match(/编号为?\s*[:：]?\s*([A-Za-z0-9][A-Za-z0-9\-_.\/]*[A-Za-z0-9])\s*的?(?:合同|协议|订单)/)||[])[1] || "";
+  const cNo = byLabel(text,["合同编号","合同号","协议编号","Contract\\s*No\\.?","S/C\\s*No\\.?","Contract\\s*Number"]);
+  f.docNo = inv ? byLabel(text,["发票号码","发票号","Invoice\\s*No\\.?","Invoice\\s*Number","INV\\s*No\\.?"]) : (cNo || contractRef);
+  f.contractNo = cNo || contractRef || byLabel(text,["P/O\\s*No\\.?","Order\\s*No\\.?","订单号"]);
+
+  f.date = inv ? dateNear(text,["开票日期","发票日期","Invoice\\s*Date"]) : dateNear(text,["签订日期","签约日期","签署日期","合同日期"]);
+  if (!f.date) f.date = inv || notice ? lastDate(text) : dateNear(text,["Date","日\\s*期"]);
+  f.signPlace = byLabel(text,["签署地点","签订地点","签约地点","Place\\s*of\\s*Signing"]);
+  f.endUser = byLabel(text,["最终用户","End\\s*User"]);
+
+  const noName = v=>v.replace(/^名\s*称\s*[:：]?\s*/,"").replace(/^信息$/,"");
+  if (notice){
+    // 开票通知：抬头方（「致 XX：」）负责开票＝销售方；「开票资料」里的名称＝购买方
+    f.seller = clean((text.match(/(?:^|\n)\s*致\s*([^\n:：]{2,60})[:：]/)||[])[1]||"");
+    f.buyer  = companyAfter(text,/开票资料|抬头/);
+  }
+  f.seller = f.seller || noName(byLabel(text,["卖方","乙方","销售方","销货方","开票方","收款方","供方","供货方","出卖人","Seller","Shipper","Exporter","Vendor","Beneficiary"])) || companyAfter(text,/销\s*售\s*方|销\s*方/);
+  f.buyer  = f.buyer  || noName(byLabel(text,["买方","甲方","购买方","购货方","受票方","需方","采购方","买受人","Buyer","Consignee","Importer","Sold\\s*To","Bill\\s*To","Messrs\\.?"])) || companyAfter(text,/购\s*买\s*方|购\s*方/);
+
+  if (inv){
+    const tax = byLabel(text,["纳税人识别号","统一社会信用代码/纳税人识别号","统一社会信用代码","税\\s*号"]);
+    f.buyerTaxId = /^[0-9A-Z]{15,20}$/i.test(tax) ? tax.toUpperCase() : "";
+    f.buyerBank = [byLabel(text,["开户行","开户银行"]), byLabel(text,["银行账号","账\\s*号"])].filter(Boolean).join(" ");
+    f.buyerAddr = [byLabel(text,["地\\s*址"]), byLabel(text,["电\\s*话"])].filter(Boolean).join(" ");
+  }
+
+  const vat = vatRows(text);
+  const items = vat.length ? vat : labeledItems(text);
+  if (items.length){
+    f.product = [...new Set(items.map(i=>i.name))].join("；");
+    f.quantity = sumQty(items);
+    f.unitPrice = items.length===1 ? items[0].price : "";
+  } else {
+    f.product = byLabel(text,["产品名称","货物名称","商品名称","品\\s*名","项目名称","Description\\s*of\\s*Goods","Commodity","Product\\s*Name"]);
+    if ((f.product.match(/规格|单位|数量|单价|金额|税率|税额/g)||[]).length >= 2) f.product = "";
+    f.quantity = byLabel(text,["数\\s*量","Quantity","Qty\\.?"]).slice(0,40);
+    f.unitPrice = amountNear(text,["单\\s*价","Unit\\s*Price"]);
+  }
+  f.amount = amountNear(text, inv
+    ? ["价税合计","发票总金额","Total\\s*Amount","Grand\\s*Total","Amount\\s*Due","合\\s*计"]
+    : ["合同总金额","合同总价","合同金额","合计金额","总金额","Total\\s*Amount","Total\\s*Value","合\\s*计"]);
+  const itemSum = items.reduce((s,i)=>s+(toNum(i.amount)||0),0);
+  if (!f.amount && itemSum) f.amount = fmtMoney(itemSum);
+  const taxSum = items.reduce((s,i)=>s+(toNum(i.tax)||0),0);
+  f.taxAmount = taxSum ? fmtMoney(taxSum) : amountNear(text,["税\\s*额","Tax\\s*Amount","GST","VAT"]);
+  f.currency = currencyOf(text);
+
+  f.loadPort = byLabel(text,["装运港","起运港","装货港","Port\\s*of\\s*Loading","POL"]);
+  f.destPort = byLabel(text,["目的港","卸货港","到达港","交货地点","交货港口","Port\\s*of\\s*Discharge","Port\\s*of\\s*Destination","Destination","POD"]);
+  f.shipDate = dateNear(text,["装运日期","装船日期","装运期","出运日期","发运日期","ETD","Shipment\\s*Date","Date\\s*of\\s*Shipment","Time\\s*of\\s*Shipment"]);
+  f.arrivalDate = dateNear(text,["到港日期","预计到港","抵港日期","入港日期","进港日期","到货日期","ETA","Arrival\\s*Date","Estimated\\s*Time\\s*of\\s*Arrival","交货日期","交货期"]);
+  f.payment = byLabel(text,["付款方式","支付方式","付款条件","结算方式","Terms\\s*of\\s*Payment","Payment\\s*Terms"]);
+  return {fields:f, items};
+}
+
+/* ---------- 录入流程 ---------- */
+const uid = ()=>Math.random().toString(36).slice(2,10);
+function tidy(t){ return (t||"").replace(/\r/g,"").replace(/[ \u3000\u00a0]+/g," ").replace(/\n{3,}/g,"\n\n").trim(); }
+function extractInto(rec, keepType){
+  if (!keepType) rec.type = classify(rec.text, rec.fileName);
+  const {fields, items} = localExtract(rec.text, rec.type);
+  rec.fields = fields; rec.items = items; rec.kind = docKind(rec.text, rec.type);
+}
+async function ingest(fileName, getContent){
+  const rec = {id:uid(),fileName,type:"other",fields:{},text:"",status:"读取中…",statusKind:"run",at:Date.now()};
+  records.unshift(rec); render();
+  const progress = (m, page)=>{
+    const pct = m?.progress ? Math.round(m.progress*100) : 0;
+    const s = m?.status==="recognizing text" ? `本机文字识别中${page?`（第 ${page} 页）`:""} ${pct}%`
+            : "正在加载本机文字识别引擎…";
+    const el = document.querySelector(`.card[data-id="${rec.id}"] .status`);
+    rec.status = s; if (el) el.textContent = s;
+  };
+  try{
+    const {text, ocr:isOcr} = await getContent(progress);
+    rec.text = tidy(text);
+    extractInto(rec);
+    rec.status = !rec.text ? "没有读到文字，请手动填写"
+               : isOcr ? "已通过本机 OCR 识别，扫描件误差较大，请仔细核对"
+               : "已识别，请核对";
+    rec.statusKind = rec.text && !isOcr ? "" : "err";
+    tab = rec.type;
+  }catch(e){
+    rec.status = "读取失败："+(e.message||e); rec.statusKind="err";
+  }
+  save(); render();
+}
+async function handleFiles(list){
+  for (const f of list) await ingest(f.name, p=>readFile(f,p));
+}
+
+/* ---------- 复制 ---------- */
+const $ = s=>document.querySelector(s);
+function toast(m){ const t=$("#toast"); t.textContent=m; t.hidden=false; clearTimeout(toast.t); toast.t=setTimeout(()=>t.hidden=true,1600); }
+function copy(text, label){
+  const fb = ()=>{ $("#fbText").value=text; $("#copyFallback").hidden=false; $("#fbText").focus(); $("#fbText").select(); };
+  try{
+    navigator.clipboard.writeText(text).then(()=>toast(label?`已复制${label}`:"已复制"), fb);
+  }catch(e){ fb(); }
+}
+$("#fbClose").onclick=()=>$("#copyFallback").hidden=true;
+const ITEM_COLS = [["name","品名"],["qty","数量"],["price","单价"],["amount","金额"],["tax","税额"]];
+const itemCols = items => ITEM_COLS.filter(([k])=>k==="name"||items.some(i=>i[k]));
+function itemsTable(r){
+  const cols = itemCols(r.items);
+  return [["序号",...cols.map(c=>c[1])].join("\t"), ...r.items.map((it,i)=>[i+1,...cols.map(([k])=>it[k]||"")].join("\t"))].join("\n");
+}
+const recText = r => `【${TYPE_NAME[r.type]}${r.kind?"·"+r.kind:""}】${r.fileName}\n`
+  + FIELDS[r.type].map(([k,l])=>`${l}：${r.fields[k]||""}`).join("\n")
+  + (r.items?.length>1 ? `\n产品明细（${r.items.length} 项）：\n` + r.items.map((it,i)=>`${i+1}. ${it.name}  ${it.qty||""}  ${it.amount||""}`.trim()).join("\n") : "");
+function tabTable(){
+  const rows = records.filter(r=>r.type===tab), cols = FIELDS[tab];
+  const cell = v=>String(v||"").replace(/[\t\n]+/g," ");
+  return [["文件名",...cols.map(c=>c[1])].join("\t"), ...rows.map(r=>[cell(r.fileName),...cols.map(([k])=>cell(r.fields[k]))].join("\t"))].join("\n");
+}
+
+/* ---------- 渲染 ---------- */
+function h(s){ return String(s??"").replace(/[&<>"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c])); }
+function render(){
+  const n = t=>records.filter(r=>r.type===t).length;
+  $("#cContract").textContent=n("contract"); $("#cInvoice").textContent=n("invoice"); $("#cOther").textContent=n("other");
+  $("#needContract").textContent=`已录入 ${n("contract")} 份`; $("#needInvoice").textContent=`已录入 ${n("invoice")} 份`;
+  document.querySelectorAll(".tabs button").forEach(b=>b.setAttribute("aria-selected", b.dataset.tab===tab));
+  $("#tabHint").textContent = tab==="other" ? "系统没能判断类型的文件，请在卡片右上角改成合同或发票" : `共 ${n(tab)} 份${TYPE_NAME[tab]}，加粗字段为重点信息`;
+  const rows = records.filter(r=>r.type===tab);
+  const list = $("#list");
+  if (!rows.length){
+    list.innerHTML = `<div class="empty-state">还没有${TYPE_NAME[tab]}。在左侧拖入文件或粘贴文字，系统会自动归到对应分类。</div>`;
+    return;
+  }
+  list.innerHTML = rows.map(r=>`
+  <article class="card" data-id="${r.id}">
+    <div class="card-head">
+      <span class="name">${h(r.fileName)}</span>
+      <div class="meta">
+        ${r.example?'<span class="tag example">示例</span>':""}
+        ${r.kind?`<span class="tag ${r.type}">${h(r.kind)}</span>`:""}
+        <span class="status ${r.statusKind||""}">${h(r.status||"")}</span>
+        <label class="fmt" for="type-${r.id}" hidden>文件类型</label>
+        <select id="type-${r.id}" data-act="type" aria-label="文件类型">
+          ${["contract","invoice","other"].map(t=>`<option value="${t}" ${t===r.type?"selected":""}>${TYPE_NAME[t]}</option>`).join("")}
+        </select>
+      </div>
+    </div>
+    <div class="fields">
+      ${FIELDS[r.type].map(([k,l])=>`
+      <div class="f ${KEY_FIELDS.has(k)?"key":""}">
+        <label for="f-${r.id}-${k}">${l}<button class="cp" data-act="cp" data-k="${k}" data-l="${h(l)}" aria-label="复制${h(l)}">复制</button></label>
+        <div class="val"><input id="f-${r.id}-${k}" data-k="${k}" class="${NUM_FIELDS.has(k)?"num":""}" value="${h(r.fields[k]||"")}" placeholder="未识别到，可手动填写"></div>
+      </div>`).join("")}
+    </div>
+    ${r.items?.length>1 ? (()=>{ const cols=itemCols(r.items); return `
+    <div class="items">
+      <div class="items-head"><strong>产品明细 · ${r.items.length} 项</strong><button data-act="copyItems">复制明细表（粘贴到 Excel）</button></div>
+      <div class="items-scroll"><table>
+        <thead><tr><th>#</th>${cols.map(c=>`<th>${c[1]}</th>`).join("")}</tr></thead>
+        <tbody>${r.items.map((it,i)=>`<tr><td>${i+1}</td>${cols.map(([k])=>`<td class="${k==="name"?"":"num"}">${h(it[k]||"")}</td>`).join("")}</tr>`).join("")}</tbody>
+      </table></div>
+    </div>`; })() : ""}
+    ${r.text?`<details class="raw"><summary>查看原文文字（${r.text.length} 字）</summary><pre>${h(r.text.slice(0,20000))}</pre></details>`:""}
+    <div class="card-foot">
+      <div class="row">
+        <button class="primary" data-act="copyRec">复制本单全部信息</button>
+        <button data-act="redo" ${r.text ? "" : "disabled"} title="按当前分类重新从原文抓取，会覆盖手动修改">按当前分类重新抓取</button>
+      </div>
+      <button class="ghost" data-act="del">删除</button>
+    </div>
+  </article>`).join("");
+}
+
+$("#list").addEventListener("input", e=>{
+  const card = e.target.closest(".card"); if(!card || !e.target.dataset.k) return;
+  const r = records.find(x=>x.id===card.dataset.id); r.fields[e.target.dataset.k]=e.target.value; save();
+});
+$("#list").addEventListener("change", e=>{
+  if (e.target.dataset.act!=="type") return;
+  const r = records.find(x=>x.id===e.target.closest(".card").dataset.id);
+  r.type = e.target.value; tab = r.type; save(); render(); toast(`已归入${TYPE_NAME[r.type]}`);
+});
+$("#list").addEventListener("click", e=>{
+  const b = e.target.closest("button[data-act]"); if(!b) return;
+  e.preventDefault();
+  const r = records.find(x=>x.id===b.closest(".card").dataset.id);
+  const act = b.dataset.act;
+  if (act==="cp"){ const v = r.fields[b.dataset.k]||""; if(!v) return toast("这个字段是空的"); copy(v, b.dataset.l); }
+  if (act==="copyRec") copy(recText(r), "本单信息");
+  if (act==="copyItems") copy(itemsTable(r), "产品明细");
+  if (act==="redo"){ extractInto(r, true); r.status="已按当前分类重新抓取，请核对"; r.statusKind=""; save(); render(); toast("已重新抓取"); }
+  if (act==="del"){ records = records.filter(x=>x!==r); save(); render(); toast("已删除"); }
+});
+document.querySelectorAll(".tabs button").forEach(b=>b.onclick=()=>{ tab=b.dataset.tab; render(); });
+$("#copyTable").onclick=()=>{ if(!records.some(r=>r.type===tab)) return toast("本类没有记录"); copy(tabTable(), `${TYPE_NAME[tab]}表格`); };
+$("#copyAllText").onclick=()=>{ const rs=records.filter(r=>r.type===tab); if(!rs.length) return toast("本类没有记录"); copy(rs.map(recText).join("\n\n"), `全部${TYPE_NAME[tab]}`); };
+let clearArm=0;
+$("#clearTab").onclick=e=>{
+  if (Date.now()-clearArm>3000){ clearArm=Date.now(); e.target.textContent="再点一次确认清空"; setTimeout(()=>e.target.textContent="清空本类",3000); return; }
+  records = records.filter(r=>r.type!==tab); save(); render(); e.target.textContent="清空本类"; toast("已清空");
+};
+
+const drop=$("#drop"), fileIn=$("#file");
+drop.onclick=()=>fileIn.click();
+drop.onkeydown=e=>{ if(e.key==="Enter"||e.key===" "){ e.preventDefault(); fileIn.click(); } };
+fileIn.onchange=()=>{ handleFiles([...fileIn.files]); fileIn.value=""; };
+["dragenter","dragover"].forEach(ev=>drop.addEventListener(ev,e=>{e.preventDefault();drop.classList.add("over");}));
+["dragleave","drop"].forEach(ev=>drop.addEventListener(ev,e=>{e.preventDefault();drop.classList.remove("over");}));
+drop.addEventListener("drop",e=>handleFiles([...e.dataTransfer.files]));
+$("#pasteBtn").onclick=()=>{
+  const t=$("#paste").value.trim(); if(!t) return toast("请先粘贴文字");
+  const first = t.split("\n").find(l=>l.trim())?.trim().slice(0,30) || "粘贴内容";
+  ingest("粘贴："+first, async()=>({text:t})); $("#paste").value="";
+};
+
+$("#aiNote").textContent = OCR_OK
+  ? "所有文件只在本机浏览器里处理，不会上传。扫描件 / 照片使用本机 OCR 识别，首次加载需几秒。"
+  : location.protocol==="file:"
+    ? "所有文件只在本机处理。当前是直接双击打开的：文字版 PDF / Word / Excel 可正常识别；扫描件和照片请改用「启动.bat」打开。"
+    : "所有文件只在本机处理。文字识别组件未加载，扫描件和照片暂时无法识别。";
+render();
+</script>
+</body>
+</html>
